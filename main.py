@@ -194,6 +194,21 @@ def forecast_case(case):
     hist = case["history"]
     if not hist:
         raise ValueError("case has no history")
+    # Input validation (no effect on valid inputs): every history read
+    # must list one rate per trophy, the tracked-player count must be
+    # positive, and the horizon must not be negative.
+    if case.get("horizon_minutes", 0) < 0:
+        raise ValueError("horizon_minutes must be >= 0")
+    for j, read in enumerate(hist):
+        rates = read.get("rates")
+        if not isinstance(rates, list) or len(rates) != ntr:
+            raise ValueError(
+                f"history read {j} has {len(rates) if isinstance(rates, list) else 'no'} rates for {ntr} trophies")
+        if not isinstance(read.get("players_tracked"), (int, float)) or read["players_tracked"] <= 0:
+            raise ValueError(f"history read {j} has players_tracked <= 0")
+        for v in rates:
+            if v is not None and not (0.0 <= v <= 100.0):
+                raise ValueError(f"history read {j} has rate {v} outside [0, 100]")
     last = hist[-1]
     horizon_days = case["horizon_minutes"] / 1440.0
     release = datetime(2026, 11, 19, 0, 0, tzinfo=timezone.utc)
@@ -313,6 +328,21 @@ def main():
         if case.get("levels", LEVELS) != LEVELS:
             raise ValueError(f"{path.name} asks for levels {case.get('levels')}, not {LEVELS}")
         forecast = forecast_case(case)
+        # Output validation: every trophy must carry exactly 5 quantiles,
+        # each in [0, 100], non-decreasing, in input trophy order.
+        expected_ids = [t["id"] for t in case["trophies"]]
+        got_ids = [t.get("id") for t in forecast["trophies"]]
+        if got_ids != expected_ids:
+            raise ValueError(f"{path.name}: trophy ids {got_ids} != input order {expected_ids}")
+        for entry in forecast["trophies"]:
+            qs = entry.get("q")
+            if not isinstance(qs, list) or len(qs) != 5:
+                raise ValueError(f"{path.name}: trophy {entry.get('id')} has {len(qs) if isinstance(qs, list) else 'no'} quantiles, expected 5")
+            for v in qs:
+                if not isinstance(v, (int, float)) or not (0.0 <= v <= 100.0):
+                    raise ValueError(f"{path.name}: trophy {entry.get('id')} quantile {v} outside [0, 100]")
+            if any(qs[k] < qs[k - 1] for k in range(1, 5)):
+                raise ValueError(f"{path.name}: trophy {entry.get('id')} quantiles not non-decreasing: {qs}")
         (OUTPUT_DIR / f"{path.stem}.out").write_text(
             json.dumps(forecast, separators=(",", ":")) + "\n", encoding="utf-8")
 
